@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DeepSeek Usage Enhancer
 // @namespace    https://github.com/vlify/DeepSeek-Usage-Enhancer
-// @version      1.3.0
-// @description  在 DeepSeek 用量页面直接注入今日数据：今日消费、今日请求数、今日Token、缓存命中率；图表悬停数字加千分位
+// @version      1.4.0
+// @description  在 DeepSeek 用量页面直接注入今日数据：今日消费、今日请求数、今日Token、缓存命中率；兼容新版平台 API；图表悬停数字加千分位
 // @author       Jmkwang; vlify
 // @license      MIT
 // @homepageURL  https://github.com/vlify/DeepSeek-Usage-Enhancer
@@ -15,7 +15,11 @@
 // ============================================================
 // 本脚本为 Jmkwang/DeepSeek-Usage-Enhancer 的修改版 (fork)
 // 原项目: https://github.com/Jmkwang/DeepSeek-Usage-Enhancer (MIT)
-// 修改者: vlify | 修改内容: 元数据规范化, 为 GreasyFork 托管做准备, 功能逻辑未改动
+// 修改者: vlify
+// 修改内容: ① 元数据规范化, 为 GreasyFork 托管做准备
+//           ② 适配新版平台 (2026-07 改版): 拦截 /usage/by_api_key/amount|cost
+//              新接口 (series[].buckets[], 金额为字符串), 同时兼容旧版结构
+// 注意: DOM 注入选择器基于旧版页面布局, 新版页面若布局变化则自动跳过注入 (不报错)
 // 许可证: MIT, 完整文本见仓库 LICENSE 文件
 // ============================================================
 
@@ -134,71 +138,183 @@
     return { requests, tokens: { total, cached_input: cachedInput, uncached_input: uncachedInput, output }, cache_hit_rate: cacheHitRate };
   }
 
+  // ---- 新版平台: 桶的 time 是 Unix 秒, 按本地时区归入"今日/昨日" ----
+  function localDateOf(unixSec) {
+    const d = new Date(unixSec * 1000);
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+
+  function localToday() {
+    return localDateOf(Math.floor(Date.now() / 1000));
+  }
+
+  function localYesterday() {
+    return localDateOf(Math.floor(Date.now() / 1000) - 86400);
+  }
+
+  // usage 字段可能是旧版数组 [{type, amount}] 或新版对象 {request, response_token, ...}
+  function extractMetricsFromUsageFlexible(usage) {
+    if (Array.isArray(usage)) {
+      return extractMetricsFromUsage(usageArrayToMap(usage));
+    }
+    if (usage && typeof usage === 'object') {
+      const n = (v) => Number(v) || 0;
+      const cachedInput = n(usage.prompt_cache_hit_token !== undefined ? usage.prompt_cache_hit_token : usage.cached_input_tokens);
+      const uncachedInput = n(usage.prompt_cache_miss_token !== undefined ? usage.prompt_cache_miss_token : usage.uncached_input_tokens);
+      const output = n(usage.response_token !== undefined ? usage.response_token : usage.output_tokens);
+      const requests = n(usage.request !== undefined ? usage.request : usage.api_requests);
+      const total = cachedInput + uncachedInput + output;
+      const divisor = cachedInput + uncachedInput;
+      const cacheHitRate = divisor > 0
+        ? Math.round((cachedInput / divisor) * 10000) / 100
+        : null;
+      return { requests, tokens: { total, cached_input: cachedInput, uncached_input: uncachedInput, output }, cache_hit_rate: cacheHitRate };
+    }
+    return { requests: 0, tokens: { total: 0, cached_input: 0, uncached_input: 0, output: 0 }, cache_hit_rate: null };
+  }
+
+  // 收集 (model, date/time, usage) 记录, 兼容新旧两种结构
+  function collectUsageRecords(bizData) {
+    const records = [];
+    // 新版: series[].buckets[].usage (按模型/API Key 拆分)
+    if (Array.isArray(bizData.series)) {
+      for (const s of bizData.series) {
+        if (!s || !s.model || !Array.isArray(s.buckets)) continue;
+        for (const b of s.buckets) {
+          if (b && b.usage) records.push({ model: s.model, time: b.time, usage: b.usage });
+        }
+      }
+      return records;
+    }
+    // 旧版: days[].data[] + total[]
+    if (Array.isArray(bizData.days)) {
+      for (const day of bizData.days) {
+        if (!day || !Array.isArray(day.data)) continue;
+        for (const entry of day.data) {
+          if (entry && entry.model) records.push({ model: entry.model, date: day.date, usage: entry.usage });
+        }
+      }
+    }
+    for (const entry of (bizData.total || [])) {
+      if (entry && entry.model) records.push({ model: entry.model, usage: entry.usage });
+    }
+    return records;
+  }
+
+  // 收集 (model, date/time, cost) 记录
+  function collectCostRecords(bizData) {
+    const records = [];
+    // 新版: data[].series[].buckets[].cost (按币种分组, 金额是字符串)
+    if (Array.isArray(bizData.data)) {
+      for (const group of bizData.data) {
+        if (!group || !Array.isArray(group.series)) continue;
+        for (const s of group.series) {
+          if (!s || !s.model || !Array.isArray(s.buckets)) continue;
+          for (const b of s.buckets) {
+            if (b) records.push({ model: s.model, time: b.time, cost: Number(b.cost) || 0 });
+          }
+        }
+      }
+      return records;
+    }
+    // 旧版: days[].data[] 的 usage 金额
+    if (Array.isArray(bizData.days)) {
+      for (const day of bizData.days) {
+        if (!day || !Array.isArray(day.data)) continue;
+        for (const entry of day.data) {
+          if (!entry) continue;
+          let c = 0;
+          if (Array.isArray(entry.usage)) {
+            for (const u of entry.usage) c += Number(u.amount) || 0;
+          }
+          records.push({ model: entry.model || '', date: day.date, cost: c });
+        }
+      }
+    }
+    return records;
+  }
+
   function transformUserSummary(bizData) {
     const normalBal = (bizData.normal_wallets && bizData.normal_wallets[0])
       ? Number(bizData.normal_wallets[0].balance) || 0 : 0;
     const bonusBal = (bizData.bonus_wallets && bizData.bonus_wallets[0])
       ? Number(bizData.bonus_wallets[0].balance) || 0 : 0;
+
+    // 新版可能直接给 total_balance / topped_up_balance / granted_balance
+    let total = normalBal + bonusBal;
+    if (total === 0) {
+      const tb = Number(bizData.total_balance) || 0;
+      const tu = Number(bizData.topped_up_balance) || 0;
+      const gr = Number(bizData.granted_balance) || 0;
+      if (tb > 0) total = tb;
+      else if (tu + gr > 0) total = tu + gr;
+    }
+
     const monthlyCost = (bizData.monthly_costs && bizData.monthly_costs[0])
       ? Number(bizData.monthly_costs[0].amount) || 0 : 0;
     const currency = (bizData.monthly_costs && bizData.monthly_costs[0])
-      ? bizData.monthly_costs[0].currency : 'CNY';
+      ? bizData.monthly_costs[0].currency : (bizData.currency || 'CNY');
+
     return {
-      balance: { total: normalBal, normal_wallet_balance: normalBal, bonus_wallet_balance: bonusBal, currency },
+      balance: { total, normal_wallet_balance: normalBal, bonus_wallet_balance: bonusBal, currency },
       monthly_consumption: { amount: monthlyCost, currency },
     };
   }
 
-  function extractModelsForDate(bizData, dateStr) {
-    const models = {};
-    let dayEntries = [];
-    if (bizData.days) {
-      const day = bizData.days.find(d => d.date === dateStr);
-      if (day && day.data) dayEntries = day.data;
+  function mergeModelMetrics(target, model, metrics) {
+    if (!target[model]) {
+      target[model] = metrics;
+      return;
     }
-    const allEntries = [...dayEntries, ...(bizData.total || [])];
+    const m = target[model];
+    m.requests += metrics.requests;
+    m.tokens.total += metrics.tokens.total;
+    m.tokens.cached_input += metrics.tokens.cached_input;
+    m.tokens.uncached_input += metrics.tokens.uncached_input;
+    m.tokens.output += metrics.tokens.output;
+    const divisor = m.tokens.cached_input + m.tokens.uncached_input;
+    m.cache_hit_rate = divisor > 0
+      ? Math.round((m.tokens.cached_input / divisor) * 10000) / 100
+      : null;
+  }
 
-    for (const entry of allEntries) {
-      if (!entry.model) continue;
-      const lower = entry.model.toLowerCase();
-      const isPro = lower.includes('pro') && (lower.includes('v4') || lower.includes('v-4'));
-      const isFlash = lower.includes('flash') && (lower.includes('v4') || lower.includes('v-4'));
-      if (!isPro && !isFlash) continue;
-
-      const metrics = extractMetricsFromUsage(usageArrayToMap(entry.usage));
-      if (dayEntries.includes(entry) || !models[entry.model]) {
-        models[entry.model] = metrics;
-      }
+  // 按日期集合筛选模型数据 (旧版 date 为 UTC 字符串, 新版 time 为 Unix 秒 → 本地日期)
+  function extractModelsForDate(bizData, dateStrs) {
+    const models = {};
+    const dates = new Set(dateStrs);
+    for (const rec of collectUsageRecords(bizData)) {
+      const recDate = rec.date !== undefined ? rec.date
+        : (rec.time !== undefined ? localDateOf(rec.time) : null);
+      if (recDate === null || !dates.has(recDate)) continue;
+      mergeModelMetrics(models, rec.model, extractMetricsFromUsageFlexible(rec.usage));
     }
     return models;
   }
 
   function transformUsageAmount(bizData) {
-    const today = utcToday();
-    const yesterday = utcYesterday();
     return {
-      today_date: today,
-      models: extractModelsForDate(bizData, today),
-      yesterday_models: extractModelsForDate(bizData, yesterday),
+      today_date: localToday(),
+      models: extractModelsForDate(bizData, [utcToday(), localToday()]),
+      yesterday_models: extractModelsForDate(bizData, [utcYesterday(), localYesterday()]),
     };
   }
 
   function transformUsageCost(bizData) {
-    const today = utcToday();
     let todayCost = 0;
-    const currency = bizData.currency || 'CNY';
+    let currency = bizData.currency || 'CNY';
+    if (Array.isArray(bizData.data) && bizData.data[0] && bizData.data[0].currency) {
+      currency = bizData.data[0].currency;
+    }
 
-    if (bizData.days) {
-      const todayDay = bizData.days.find(d => d.date === today);
-      if (todayDay && todayDay.data) {
-        for (const entry of todayDay.data) {
-          if (entry.usage) {
-            for (const u of entry.usage) {
-              todayCost += Number(u.amount) || 0;
-            }
-          }
-        }
+    for (const rec of collectCostRecords(bizData)) {
+      if (rec.date !== undefined) {
+        if (rec.date !== utcToday() && rec.date !== localToday()) continue;
+      } else if (rec.time !== undefined) {
+        if (localDateOf(rec.time) !== localToday()) continue;
       }
+      todayCost += rec.cost;
     }
 
     return { today_cost: { amount: Math.floor(todayCost * 100) / 100, currency } };
@@ -242,16 +358,25 @@
   // 拦截层
   // ============================================================
   const TRACKED_ENDPOINTS = [
-    { method: 'GET', path: '/api/v0/users/get_user_summary', id: 'get_user_summary' },
-    { method: 'GET', path: '/api/v0/usage/amount', id: 'usage_amount' },
-    { method: 'GET', path: '/api/v0/usage/cost', id: 'usage_cost' },
+    { method: 'GET', path: '/users/get_user_summary', id: 'get_user_summary' },
+    // 新版平台 (2026-07 改版): 按 API Key 拆分用量
+    { method: 'GET', path: '/usage/by_api_key/amount', id: 'usage_amount' },
+    { method: 'GET', path: '/usage/by_api_key/cost', id: 'usage_cost' },
+    // 旧版平台兼容
+    { method: 'GET', path: '/usage/amount', id: 'usage_amount' },
+    { method: 'GET', path: '/usage/cost', id: 'usage_cost' },
   ];
 
   function matchEndpoint(method, url) {
+    const m = method.toUpperCase();
     for (const ep of TRACKED_ENDPOINTS) {
-      if (method.toUpperCase() === ep.method && url.includes(ep.path)) {
+      if (m === ep.method && url.includes(ep.path)) {
         return ep;
       }
+    }
+    // 新版平台也可能通过 /api/v0/users/{id} 返回账户汇总
+    if (m === 'GET' && /\/users\/\d+(\/|$|\?)/.test(url)) {
+      return { method: 'GET', path: '', id: 'get_user_summary' };
     }
     return null;
   }

@@ -1,8 +1,26 @@
 # DeepSeek Usage Enhancer
 
 > **本仓库为 fork 修改版** —— 原项目: [Jmkwang/DeepSeek-Usage-Enhancer](https://github.com/Jmkwang/DeepSeek-Usage-Enhancer) (MIT)
-> 修改者: vlify | 修改内容: 元数据规范化, 为 GreasyFork 托管做准备, 功能逻辑未改动
+> 修改者: vlify | 修改内容: 元数据规范化 + 适配新版平台 API, 为 GreasyFork 托管做准备
 > 许可证: MIT (完整文本见 LICENSE 文件)
+
+---
+
+## 新版平台适配 (v1.4.0, 2026-08)
+
+DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|cost` 改为
+`/api/v0/usage/by_api_key/amount|cost`(按 API Key 拆分, `series[].buckets[]` 结构,
+金额为字符串)。本 fork 已适配:
+
+- 拦截新端点, 同时兼容旧端点
+- 解析新结构 (`series[].buckets[]`, usage 对象字段), 同时兼容旧结构 (`days[].data[]`)
+- 支持 `/api/v0/users/{id}` 形式的账户汇总, 兼容 `total_balance` / `topped_up_balance` / `granted_balance` 新字段
+- "今日" 按本地时区计算 (新版桶的 `time` 为 Unix 秒)
+- 悬浮面板版 (`deepseek-usage-monitor.js`) 完全自包含, 推荐使用
+- 页面注入版 (`DeepSeek-Usage-Enhancer.js`) 数据层已适配; DOM 注入选择器基于旧版布局,
+  新版页面若布局变化会自动跳过注入 (不影响脚本其他功能)
+
+---
 
 在 DeepSeek 开放平台用量页面补全**今日数据**——今日消费、请求次数、Token 用量、缓存命中率，并提供图表数字千分位格式化。
 
