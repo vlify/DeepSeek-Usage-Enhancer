@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DeepSeek Usage Enhancer
 // @namespace    https://github.com/vlify/DeepSeek-Usage-Enhancer
-// @version      1.4.0
-// @description  在 DeepSeek 用量页面直接注入今日数据：今日消费、今日请求数、今日Token、缓存命中率；兼容新版平台 API；图表悬停数字加千分位
+// @version      1.5.0
+// @description  在 DeepSeek 用量页面注入今日数据（今日消费/请求数/Token/缓存命中率）；自动识别新版与旧版页面布局；图表悬停数字加千分位
 // @author       Jmkwang; vlify
 // @license      MIT
 // @homepageURL  https://github.com/vlify/DeepSeek-Usage-Enhancer
@@ -19,7 +19,8 @@
 // 修改内容: ① 元数据规范化, 为 GreasyFork 托管做准备
 //           ② 适配新版平台 (2026-07 改版): 拦截 /usage/by_api_key/amount|cost
 //              新接口 (series[].buckets[], 金额为字符串), 同时兼容旧版结构
-// 注意: DOM 注入选择器基于旧版页面布局, 新版页面若布局变化则自动跳过注入 (不报错)
+//           ③ v1.5.0: 新版页面 DOM 注入 (统计行后今日数据条 + 模型今日明细行),
+//              自动识别新版/旧版布局, 旧版注入保留为兜底
 // 许可证: MIT, 完整文本见仓库 LICENSE 文件
 // ============================================================
 
@@ -303,6 +304,7 @@
 
   function transformUsageCost(bizData) {
     let todayCost = 0;
+    const modelCosts = {};
     let currency = bizData.currency || 'CNY';
     if (Array.isArray(bizData.data) && bizData.data[0] && bizData.data[0].currency) {
       currency = bizData.data[0].currency;
@@ -315,9 +317,10 @@
         if (localDateOf(rec.time) !== localToday()) continue;
       }
       todayCost += rec.cost;
+      if (rec.model) modelCosts[rec.model] = (modelCosts[rec.model] || 0) + rec.cost;
     }
 
-    return { today_cost: { amount: Math.floor(todayCost * 100) / 100, currency } };
+    return { today_cost: { amount: Math.floor(todayCost * 100) / 100, currency }, model_costs: modelCosts };
   }
 
   function buildOutputPayload() {
@@ -330,6 +333,15 @@
 
     let costData = { today_cost: { amount: 0, currency: 'CNY' } };
     if (rawUsageCost) costData = transformUsageCost(rawUsageCost);
+
+    // 将模型费用合并到模型数据中
+    if (costData.model_costs && usageData.models) {
+      for (const [model, cost] of Object.entries(costData.model_costs)) {
+        if (usageData.models[model]) {
+          usageData.models[model].cost = Math.floor(cost * 100) / 100;
+        }
+      }
+    }
 
     return {
       timestamp: new Date().toISOString(),
@@ -456,6 +468,154 @@
   let tooltipObserverSetup = false;
   const INJECT_MARKER = 'data-ds-inject';
 
+  // ============================================================
+  // 新版页面 (2026-07 改版) 注入
+  // 锚点: 统计行 c7197b0d (消费金额/请求次数/Tokens), 模型名 ce40a39d
+  // ============================================================
+  const NEW_OVERVIEW_CLS = 'c7197b0d';
+  const NEW_MODELNAME_CLS = 'ce40a39d';
+  const V2_MARKER = 'data-ds-inject-v2';
+
+  let layout = 'unknown';
+  let layoutLogged = false;
+
+  function detectLayout() {
+    if (document.querySelector('[class*="' + NEW_OVERVIEW_CLS + '"]') ||
+        document.querySelector('[class*="' + NEW_MODELNAME_CLS + '"]')) return 'new';
+    if (document.querySelector('[class*="a0cde8c1"]')) return 'old';
+    return 'none';
+  }
+
+  function ensureLayout() {
+    if (layout !== 'new' && layout !== 'old') {
+      const d = detectLayout();
+      if (d !== 'none') {
+        layout = d;
+        if (!layoutLogged) { layoutLogged = true; log('页面布局识别: ' + layout); }
+      } else if (document.body && document.body.children && document.body.children.length > 0 && !layoutLogged) {
+        layoutLogged = true;
+        log('未识别页面布局, 跳过 DOM 注入 (数据仍在拦截)');
+      }
+    }
+    return layout;
+  }
+
+  function v2FmtShort(n) {
+    if (n === undefined || n === null) return '—';
+    n = Number(n) || 0;
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+    return n.toLocaleString();
+  }
+
+  function v2Money(n) {
+    return '¥' + (Math.floor((Number(n) || 0) * 100) / 100).toFixed(2);
+  }
+
+  function v2Chip(label, value) {
+    const span = document.createElement('span');
+    span.className = 'dsv2-chip';
+    const lbl = document.createElement('b');
+    lbl.textContent = label;
+    const val = document.createElement('i');
+    val.textContent = value;
+    span.appendChild(lbl);
+    span.appendChild(val);
+    return span;
+  }
+
+  function v2StyleOnce() {
+    if (document.getElementById('dsv2-style')) return;
+    const st = document.createElement('style');
+    st.id = 'dsv2-style';
+    st.textContent =
+      '.dsv2-strip{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;margin:12px 0 4px;' +
+      'background:rgba(30,30,46,.92);border:1px solid rgba(255,255,255,.1);border-radius:12px;' +
+      'font-family:-apple-system,\'SF Pro Text\',\'Helvetica Neue\',sans-serif;font-size:12px;color:#cdd6f4;' +
+      'box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:50;}' +
+      '.dsv2-chip{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;' +
+      'background:rgba(255,255,255,.06);border-radius:8px;white-space:nowrap;}' +
+      '.dsv2-chip b{font-weight:600;color:#6c7086;font-size:11px;}' +
+      '.dsv2-chip i{font-style:normal;font-weight:700;color:#cdd6f4;font-variant-numeric:tabular-nums;}';
+    (document.head || document.body || document.documentElement).appendChild(st);
+  }
+
+  function v2Summary(payload) {
+    const models = payload.models || {};
+    let req = 0, tok = 0, cached = 0, input = 0;
+    for (const name of Object.keys(models)) {
+      const m = models[name];
+      req += m.requests || 0;
+      if (m.tokens) {
+        tok += m.tokens.total || 0;
+        cached += m.tokens.cached_input || 0;
+        input += (m.tokens.cached_input || 0) + (m.tokens.uncached_input || 0);
+      }
+    }
+    const hit = input > 0 ? Math.round((cached / input) * 1000) / 10 : null;
+    return { cost: (payload.today_cost || {}).amount || 0, req, tok, hit };
+  }
+
+  function injectNewLayout() {
+    const payload = latestPayload;
+    if (!payload) return;
+    v2StyleOnce();
+    const s = v2Summary(payload);
+
+    // 1) 统计行后插入今日数据条
+    const statsRow = document.querySelector('[class*="' + NEW_OVERVIEW_CLS + '"]');
+    if (statsRow) {
+      let strip = document.querySelector('[' + V2_MARKER + '="strip"]');
+      if (!strip) {
+        strip = document.createElement('div');
+        strip.className = 'dsv2-strip';
+        strip.setAttribute(V2_MARKER, 'strip');
+        statsRow.insertAdjacentElement('afterend', strip);
+      }
+      strip.innerHTML = '';
+      strip.appendChild(v2Chip('今日消费', v2Money(s.cost)));
+      strip.appendChild(v2Chip('今日请求', v2FmtShort(s.req)));
+      strip.appendChild(v2Chip('今日Tokens', v2FmtShort(s.tok)));
+      strip.appendChild(v2Chip('缓存命中率', s.hit !== null ? s.hit.toFixed(1) + '%' : '—'));
+    }
+
+    // 2) 每个模型名后插入今日明细行
+    const modelEls = document.querySelectorAll('[class*="' + NEW_MODELNAME_CLS + '"]');
+    for (const el of modelEls) {
+      const text = (el.textContent || '').trim();
+      if (!text) continue;
+      let matchedName = null;
+      for (const name of Object.keys(payload.models || {})) {
+        if (text.toLowerCase().includes(name.toLowerCase()) ||
+            name.toLowerCase().includes(text.toLowerCase())) {
+          matchedName = name;
+          break;
+        }
+      }
+      if (!matchedName) continue;
+      const m = payload.models[matchedName];
+      const marker = 'model-' + matchedName.replace(/[^a-z0-9-]/gi, '_');
+      let row = document.querySelector('[' + V2_MARKER + '="' + marker + '"]');
+      if (!row) {
+        row = document.createElement('div');
+        row.className = 'dsv2-strip';
+        row.setAttribute(V2_MARKER, marker);
+        el.insertAdjacentElement('afterend', row);
+      }
+      row.innerHTML = '';
+      const nameChip = document.createElement('span');
+      nameChip.className = 'dsv2-chip';
+      nameChip.textContent = text;
+      row.appendChild(nameChip);
+      row.appendChild(v2Chip('今日请求', v2FmtShort(m.requests)));
+      row.appendChild(v2Chip('今日Tokens', v2FmtShort(m.tokens ? m.tokens.total : 0)));
+      row.appendChild(v2Chip('命中率', (m.cache_hit_rate !== null && m.cache_hit_rate !== undefined)
+        ? m.cache_hit_rate.toFixed(1) + '%' : '—'));
+      row.appendChild(v2Chip('今日消费', v2Money(m.cost)));
+    }
+  }
+
   function onDataUpdate(payload) {
     latestPayload = payload;
     tryAllInjections();
@@ -469,19 +629,25 @@
   function tryAllInjections() {
     if (!latestPayload) return;
 
-    // 今日消费卡片：不存在则创建，已存在则更新金额
-    if (!isInjectionPresent('cost')) {
-      injectTodayCostCard();
-    } else {
-      updateTodayCostAmount();
-    }
+    const l = ensureLayout();
 
-    const modelNames = Object.keys(latestPayload.models || {});
-    for (const name of modelNames) {
-      const marker = 'model-' + name.replace(/[^a-z0-9-]/gi, '_');
-      if (!isInjectionPresent(marker)) {
-        const yd = (latestPayload.yesterday_models || {})[name];
-        injectModelData(name, latestPayload.models[name], yd, marker);
+    if (l === 'new') {
+      injectNewLayout();
+    } else if (l === 'old') {
+      // 旧版页面注入：今日消费卡片 / 模型今日行
+      if (!isInjectionPresent('cost')) {
+        injectTodayCostCard();
+      } else {
+        updateTodayCostAmount();
+      }
+
+      const modelNames = Object.keys(latestPayload.models || {});
+      for (const name of modelNames) {
+        const marker = 'model-' + name.replace(/[^a-z0-9-]/gi, '_');
+        if (!isInjectionPresent(marker)) {
+          const yd = (latestPayload.yesterday_models || {})[name];
+          injectModelData(name, latestPayload.models[name], yd, marker);
+        }
       }
     }
 
