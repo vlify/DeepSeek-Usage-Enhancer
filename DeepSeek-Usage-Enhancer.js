@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         DeepSeek Usage Enhancer
 // @namespace    https://github.com/vlify/DeepSeek-Usage-Enhancer
-// @version      1.6.0
-// @description  在 DeepSeek 用量页面注入今日数据（原生观感今日消费卡片 + 各模型今日明细）；自动识别新版与旧版页面布局；图表悬停数字加千分位
+// @version      1.5.0
+// @description  在 DeepSeek 用量页面注入今日数据（今日消费/请求数/Token/缓存命中率）；自动识别新版与旧版页面布局；图表悬停数字加千分位
 // @author       Jmkwang; vlify
 // @license      MIT
 // @homepageURL  https://github.com/vlify/DeepSeek-Usage-Enhancer
@@ -19,9 +19,8 @@
 // 修改内容: ① 元数据规范化, 为 GreasyFork 托管做准备
 //           ② 适配新版平台 (2026-07 改版): 拦截 /usage/by_api_key/amount|cost
 //              新接口 (series[].buckets[], 金额为字符串), 同时兼容旧版结构
-//           ③ v1.5.0: 新版页面 DOM 注入, 自动识别新版/旧版布局
-//           ④ v1.6.0: 今日消费卡片改为克隆页面原生统计卡片 (观感与原版一致),
-//              模型行自适应页面主题
+//           ③ v1.5.0: 新版页面 DOM 注入 (统计行后今日数据条 + 模型今日明细行),
+//              自动识别新版/旧版布局, 旧版注入保留为兜底
 // 许可证: MIT, 完整文本见仓库 LICENSE 文件
 // ============================================================
 
@@ -528,73 +527,57 @@
 
   function v2StyleOnce() {
     if (document.getElementById('dsv2-style')) return;
-    // 自适应页面主题: 读取 body 的背景色/文字色, 让模型行与页面融为一体
-    let bg = 'rgba(30,30,46,.92)', fg = '#cdd6f4', chipBg = 'rgba(255,255,255,.08)';
-    try {
-      const cs = window.getComputedStyle(document.body);
-      const bodyBg = cs.backgroundColor;
-      if (bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent') {
-        bg = bodyBg;
-        chipBg = 'rgba(127,127,127,.15)';
-      }
-      const bodyFg = cs.color;
-      if (bodyFg && bodyFg !== 'rgba(0, 0, 0, 0)') fg = bodyFg;
-    } catch (e) { /* ignore */ }
     const st = document.createElement('style');
     st.id = 'dsv2-style';
     st.textContent =
-      '.dsv2-strip{display:flex;flex-wrap:wrap;gap:8px;padding:8px 2px;margin:8px 0 4px;' +
-      'font-family:inherit;font-size:12px;color:' + fg + ';}' +
+      '.dsv2-strip{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;margin:12px 0 4px;' +
+      'background:rgba(30,30,46,.92);border:1px solid rgba(255,255,255,.1);border-radius:12px;' +
+      'font-family:-apple-system,\'SF Pro Text\',\'Helvetica Neue\',sans-serif;font-size:12px;color:#cdd6f4;' +
+      'box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:50;}' +
       '.dsv2-chip{display:inline-flex;align-items:baseline;gap:6px;padding:4px 10px;' +
-      'background:' + chipBg + ';border-radius:8px;white-space:nowrap;}' +
-      '.dsv2-chip b{font-weight:600;opacity:.6;font-size:11px;}' +
-      '.dsv2-chip i{font-style:normal;font-weight:700;font-variant-numeric:tabular-nums;}';
+      'background:rgba(255,255,255,.06);border-radius:8px;white-space:nowrap;}' +
+      '.dsv2-chip b{font-weight:600;color:#6c7086;font-size:11px;}' +
+      '.dsv2-chip i{font-style:normal;font-weight:700;color:#cdd6f4;font-variant-numeric:tabular-nums;}';
     (document.head || document.body || document.documentElement).appendChild(st);
   }
 
-  // 在克隆卡片里找纯文本叶子元素 (标题)
-  function v2FindLeaf(root, re) {
-    const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-    for (const el of all) {
-      if (el.children.length === 0 && re.test(el.textContent || '')) return el;
+  function v2Summary(payload) {
+    const models = payload.models || {};
+    let req = 0, tok = 0, cached = 0, input = 0;
+    for (const name of Object.keys(models)) {
+      const m = models[name];
+      req += m.requests || 0;
+      if (m.tokens) {
+        tok += m.tokens.total || 0;
+        cached += m.tokens.cached_input || 0;
+        input += (m.tokens.cached_input || 0) + (m.tokens.uncached_input || 0);
+      }
     }
-    return null;
-  }
-
-  // 在克隆卡片里找数值叶子元素 (含数字、不含文案关键词)
-  function v2FindValueLeaf(root) {
-    const all = root.querySelectorAll ? root.querySelectorAll('*') : [];
-    for (const el of all) {
-      const t = (el.textContent || '').trim();
-      if (el.children.length === 0 && t && /[\d,]/.test(t) &&
-          !/消费|余额|用量|请求|Token|元|¥|CNY|USD/i.test(t)) return el;
-    }
-    return null;
+    const hit = input > 0 ? Math.round((cached / input) * 1000) / 10 : null;
+    return { cost: (payload.today_cost || {}).amount || 0, req, tok, hit };
   }
 
   function injectNewLayout() {
     const payload = latestPayload;
     if (!payload) return;
     v2StyleOnce();
+    const s = v2Summary(payload);
 
-    // 1) 今日消费卡片: 克隆页面自己的第一张统计卡片 (消费金额), 原生观感
+    // 1) 统计行后插入今日数据条
     const statsRow = document.querySelector('[class*="' + NEW_OVERVIEW_CLS + '"]');
-    if (statsRow && statsRow.firstElementChild) {
-      const todayCost = Math.floor(((payload.today_cost || {}).amount || 0) * 100) / 100;
-      let card = document.querySelector('[' + V2_MARKER + '="cost"]');
-      if (!card) {
-        const src = statsRow.firstElementChild;
-        card = src.cloneNode(true);
-        card.setAttribute(V2_MARKER, 'cost');
-        const titleEl = v2FindLeaf(card, /消费/);
-        if (titleEl) titleEl.textContent = '今日消费';
-        statsRow.appendChild(card);
+    if (statsRow) {
+      let strip = document.querySelector('[' + V2_MARKER + '="strip"]');
+      if (!strip) {
+        strip = document.createElement('div');
+        strip.className = 'dsv2-strip';
+        strip.setAttribute(V2_MARKER, 'strip');
+        statsRow.insertAdjacentElement('afterend', strip);
       }
-      const valEl = v2FindValueLeaf(card);
-      if (valEl) {
-        const hadYen = /¥/.test(valEl.textContent);
-        valEl.textContent = hadYen ? '¥' + todayCost.toFixed(2) : todayCost.toFixed(2);
-      }
+      strip.innerHTML = '';
+      strip.appendChild(v2Chip('今日消费', v2Money(s.cost)));
+      strip.appendChild(v2Chip('今日请求', v2FmtShort(s.req)));
+      strip.appendChild(v2Chip('今日Tokens', v2FmtShort(s.tok)));
+      strip.appendChild(v2Chip('缓存命中率', s.hit !== null ? s.hit.toFixed(1) + '%' : '—'));
     }
 
     // 2) 每个模型名后插入今日明细行
