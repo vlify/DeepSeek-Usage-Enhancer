@@ -1,5 +1,9 @@
 # DeepSeek Usage Enhancer
 
+> **本仓库为 fork 修改版** —— 原项目: [Jmkwang/DeepSeek-Usage-Enhancer](https://github.com/Jmkwang/DeepSeek-Usage-Enhancer) (MIT)
+> 修改者: vlify | 修改内容: 元数据规范化, 为 GreasyFork 托管做准备, 功能逻辑未改动
+> 许可证: MIT (完整文本见 LICENSE 文件)
+
 在 DeepSeek 开放平台用量页面补全**今日数据**——今日消费、请求次数、Token 用量、缓存命中率，并提供图表数字千分位格式化。
 
 ---

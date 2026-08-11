@@ -1,13 +1,23 @@
 // ==UserScript==
-// @name         DeepSeek Usage Enhancer 
-// @namespace    https://github.com/local/deepseek-usage-enhancer
-// @version      1.2.0
+// @name         DeepSeek Usage Enhancer
+// @namespace    https://github.com/vlify/DeepSeek-Usage-Enhancer
+// @version      1.3.0
 // @description  在 DeepSeek 用量页面直接注入今日数据：今日消费、今日请求数、今日Token、缓存命中率；图表悬停数字加千分位
-// @author       Jmkwang
+// @author       Jmkwang; vlify
+// @license      MIT
+// @homepageURL  https://github.com/vlify/DeepSeek-Usage-Enhancer
+// @supportURL   https://github.com/vlify/DeepSeek-Usage-Enhancer/issues
 // @match        https://platform.deepseek.com/usage*
 // @run-at       document-start
 // @grant        none
 // ==/UserScript==
+
+// ============================================================
+// 本脚本为 Jmkwang/DeepSeek-Usage-Enhancer 的修改版 (fork)
+// 原项目: https://github.com/Jmkwang/DeepSeek-Usage-Enhancer (MIT)
+// 修改者: vlify | 修改内容: 元数据规范化, 为 GreasyFork 托管做准备, 功能逻辑未改动
+// 许可证: MIT, 完整文本见仓库 LICENSE 文件
+// ============================================================
 
 (function () {
   'use strict';
