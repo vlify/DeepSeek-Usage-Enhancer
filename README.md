@@ -1,12 +1,22 @@
 # DeepSeek Usage Enhancer
 
 > **本仓库为 fork 修改版** —— 原项目: [Jmkwang/DeepSeek-Usage-Enhancer](https://github.com/Jmkwang/DeepSeek-Usage-Enhancer) (MIT)
-> 修改者: vlify | 修改内容: 元数据规范化 + 适配新版平台 API, 为 GreasyFork 托管做准备
+> 修改者: vlify | 已适配新版平台 API 与页面, 发布至 GreasyFork
 > 许可证: MIT (完整文本见 LICENSE 文件)
 
 ---
 
-## 新版平台适配 (v1.4.0, 2026-08)
+## 安装
+
+1. 安装浏览器用户脚本管理器: [Tampermonkey](https://www.tampermonkey.net/) (Chrome / Edge / Firefox)
+2. 二选一:
+   - **GreasyFork 一键安装** (推荐): 在 [GreasyFork 搜索「DeepSeek Usage Enhancer」](https://greasyfork.org/zh-CN/scripts?q=DeepSeek+Usage+Enhancer) 或 [搜索「DeepSeek Daily Monitor」](https://greasyfork.org/zh-CN/scripts?q=DeepSeek+Daily+Monitor), 打开脚本页点「安装」
+   - **GitHub 手动安装**: 打开 `DeepSeek-Usage-Enhancer.js` / `deepseek-usage-monitor.js`, 全选复制; 在管理器「添加新脚本」中粘贴保存
+3. 打开 [DeepSeek 用量页面](https://platform.deepseek.com/usage), 脚本自动生效
+
+---
+
+## 新版平台适配
 
 DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|cost` 改为
 `/api/v0/usage/by_api_key/amount|cost`(按 API Key 拆分, `series[].buckets[]` 结构,
@@ -17,18 +27,7 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 - 支持 `/api/v0/users/{id}` 形式的账户汇总, 兼容 `total_balance` / `topped_up_balance` / `granted_balance` 新字段
 - "今日" 按本地时区计算 (新版桶的 `time` 为 Unix 秒)
 - 悬浮面板版 (`deepseek-usage-monitor.js`) 完全自包含, 推荐使用
-- 页面注入版 (`DeepSeek-Usage-Enhancer.js`) 数据层已适配; DOM 注入选择器基于旧版布局,
-  新版页面若布局变化会自动跳过注入 (不影响脚本其他功能)
-
-### v1.5.0 (2026-08): 新版页面 DOM 注入
-
-新版用量页 (统计行 + 模型图表卡片) 注入支持:
-
-- 自动识别布局: 新版 (统计行 `c7197b0d` / 模型名 `ce40a39d`) 或旧版 (原 class 哈希), 互不影响
-- 新版页面: 统计行下方插入「今日消费 / 今日请求 / 今日Tokens / 缓存命中率」数据条;
-  每个模型名下插入今日明细行 (请求 / Tokens / 命中率 / 消费)
-- 模型费用已合并到模型数据 (今日消费按模型展示)
-- React 重绘后自动重新注入; 未识别布局时输出控制台日志 (数据拦截不受影响)
+- 页面注入版 (`DeepSeek-Usage-Enhancer.js`) 自动识别新版/旧版页面布局
 
 ---
 
@@ -38,7 +37,7 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 
 ## 背景
 
-打开 [platform.deepseek.com/usage](https://platform.deepseek.com/usage)，官方页面默认只展示**本月累计**数据。想看"今天花了多少钱""今天请求了多少次""缓存命中率是多少"，需要手动点图表柱子、切换日期、自己算。
+打开 [platform.deepseek.com/usage](https://platform.deepseek.com/usage)，官方页面默认只展示**所选时间范围**的累计数据。想看"今天花了多少钱""今天请求了多少次""缓存命中率是多少"，需要手动点图表柱子、切换日期、自己算。
 
 本项目的脚本帮你自动补齐这些信息。
 
@@ -48,7 +47,7 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 
 | 版本 | 文件 | 方式 |
 |------|------|------|
-| **页面注入版** | `DeepSeek-Usage-Enhancer.js` | 将数据注入页面原有布局，像原生功能 |
+| **页面注入版** | `DeepSeek-Usage-Enhancer.js` | 将今日数据注入页面布局 |
 | **悬浮面板版** | `deepseek-usage-monitor.js` | 独立浮窗展示，可拖拽可折叠 |
 
 两个版本功能相同，选一个安装即可。**功能比较**：
@@ -64,39 +63,29 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 
 ---
 
-## 安装
-
-1. 安装浏览器用户脚本管理器：
-   - [Tampermonkey](https://www.tampermonkey.net/)（Chrome / Edge / Firefox）
-
-2. 点击管理器「添加新脚本」，将对应 `.js` 文件的全部内容粘贴进去，保存。
-
-3. 打开 [DeepSeek 用量页面](https://platform.deepseek.com/usage)，脚本自动生效。
-
----
-
 ## 功能详情
-
 
 ### 页面注入版（`DeepSeek-Usage-Enhancer.js`）
 
-安装后打开用量页面，你会看到：
+安装后打开用量页面，脚本自动识别新版/旧版布局：
 
-- **「今日消费」卡片** — 紧挨着官方「本月消费」卡片，显示今天的消费金额（CNY）。
-- **今日/昨日请求次数** — 在每个模型的「API 请求次数」下方，追加昨天和今天的请求量。
-- **今日总 Tokens + 缓存命中率** — 在「Tokens」区域下方展示今日 Token 总量和缓存命中率。
+- **新版页面 (2026-07 改版后)**:
+  - 统计行下方插入「今日消费 / 今日请求 / 今日Tokens / 缓存命中率」数据条
+  - 每个模型名下插入今日明细行 (请求数 / Tokens / 缓存命中率 / 消费金额)
+- **旧版页面**:
+  - 「今日消费」卡片 — 紧挨着官方「本月消费」卡片
+  - 今日/昨日请求次数 — 每个模型下追加
+  - 今日总 Tokens + 缓存命中率
 - **图表悬停数字千分位** — 鼠标悬停图表时，4 位以上数字自动加逗号分隔（如 `1234567` → `1,234,567`）。
 
 > 页面是 React 渲染的，脚本持续监听 DOM 变化，重绘后自动重新注入。
->
-> 
 
 ### 悬浮面板版（`deepseek-usage-monitor.js`）
 
 安装后页面右下角会出现一个深色浮窗面板：
 
 - **账户余额** — 充值余额、本月消费、今日消费。
-- **各模型详情块** — `deepseek-v4-pro` 和 `deepseek-v4-Flash` 的请求数、总 Token、缓存命中/未命中/输出 Token、缓存命中率。
+- **各模型详情块** — `deepseek-v4-pro` 和 `deepseek-v4-flash` 的请求数、总 Token、缓存命中/未命中/输出 Token、缓存命中率。
 - **底部状态栏** — 汇总总 Token 和总请求数。
 - **拖拽移动** — 拖动标题栏即可移动面板，位置自动保存到 localStorage。
 - **折叠/展开** — 点击标题栏按钮收起面板。
@@ -108,13 +97,14 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 
 ## 原理简介
 
-两个脚本通过拦截页面发起的三个 API 请求获取原始数据：
+两个脚本通过拦截页面发起的 API 请求获取原始数据：
 
 | API | 用途 |
 |-----|------|
-| `GET /api/v0/users/get_user_summary` | 账户余额与本月消费 |
-| `GET /api/v0/usage/amount` | 各模型的 Token/请求用量 |
-| `GET /api/v0/usage/cost` | 每日费用明细 |
+| `GET /api/v0/users/get_user_summary` (或 `/api/v0/users/{id}`) | 账户余额与本月消费 |
+| `GET /api/v0/usage/by_api_key/amount` | 各模型的 Token/请求用量 (新版平台) |
+| `GET /api/v0/usage/by_api_key/cost` | 每日费用明细 (新版平台) |
+| `GET /api/v0/usage/amount` / `usage/cost` | 旧版平台兼容 |
 
 拦截方式：`window.fetch` 和 `XMLHttpRequest` 的双重 monkey-patch，确保覆盖所有请求方式。
 
@@ -126,11 +116,23 @@ DeepSeek 开放平台于 2026-07 改版, 用量接口从 `/api/v0/usage/amount|c
 
 - 纯本地运行，无远程通信，`@grant none`。
 - 源代码未压缩混淆，可逐行审查。
-- 「页面注入版」约 650 行，「悬浮面板版」约 680 行。
 
 ---
 
-## 更新日志
+## 更新日志 (本 fork)
+
+### v1.5.0 (2026-08)
+- 适配新版平台 by_api_key 用量接口 (`series[].buckets[]`, 金额为字符串), 兼容旧接口
+- 新版页面 DOM 注入 (今日数据条 + 模型今日明细行), 自动识别新版/旧版布局
+- 支持 `/api/v0/users/{id}` 账户汇总, 兼容 `total_balance` 等新字段
+- 模型费用合并展示
+
+### v1.3.0 (2026-08)
+- 元数据规范化 (MIT 许可证、唯一 namespace), 为 GreasyFork 托管做准备
+
+---
+
+## 更新日志 (原项目)
 
 ### v1.2.0
 - 页面注入版：长轮询间隔从 10s 缩短至 3s，页面重绘后响应更快。
